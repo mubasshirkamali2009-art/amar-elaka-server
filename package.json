@@ -11,7 +11,17 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "cors": "^2.8.6",
     "dotenv": "^17.4.2",
-    "express": "^5.2.1"
-  }
+    "express": "^5.2.1",
+    "mongodb": "^7.6.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mubasshirkamali2009-art/amar-elaka-server.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mubasshirkamali2009-art/amar-elaka-server/issues"
+  },
+  "homepage": "https://github.com/mubasshirkamali2009-art/amar-elaka-server#readme"
 }
