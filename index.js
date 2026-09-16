@@ -2,13 +2,18 @@ const dns = require("node:dns");
 dns.setServers(["1.1.1.1", "8.8.8.8"]);
 const express = require('express');
 const cors = require('cors');
+const dotenv = require('dotenv');
+dotenv.config();
+
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 
 const app = express();
 const port = process.env.PORT || 5000;
-require('dotenv').config();
 
-app.use(cors());
+app.use(cors({
+    origin: "http://localhost:3000",
+    credentials: true,
+}));
 app.use(express.json());
 
 app.get('/', (req, res) => {
@@ -17,7 +22,6 @@ app.get('/', (req, res) => {
 
 const uri = process.env.MONGO_DB_URI;
 
-// Create a MongoClient with a MongoClientOptions object to set the Stable API version
 const client = new MongoClient(uri, {
     serverApi: {
         version: ServerApiVersion.v1,
@@ -35,7 +39,6 @@ async function run() {
         // const runsCollection = database.collection("runs");
         // const territoriesCollection = database.collection("territories");
 
-        // Send a ping to confirm a successful connection
         await client.db("admin").command({ ping: 1 });
         console.log("Pinged your deployment. You successfully connected to MongoDB!");
     } finally {
