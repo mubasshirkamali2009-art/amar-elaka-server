@@ -33,6 +33,10 @@ const client = new MongoClient(uri, {
 
 const LOOP_CLOSURE_TOLERANCE_METERS = 50;
 
+// Points closer together than this are treated as GPS jitter, not real
+// movement, so they don't get added to the live distance total.
+const MIN_MOVEMENT_METERS = 2;
+
 // Reverse-geocode a [lat, lng] point into a division/district name using
 // OpenStreetMap's free Nominatim service. No API key needed.
 async function reverseGeocode(lat, lng) {
@@ -61,6 +65,125 @@ async function run() {
         const usersCollection = database.collection("users");
         const runsCollection = database.collection("runs");
         const territoriesCollection = database.collection("territories");
+
+        // =====================================================
+        // RUN START — creates an "active" run for a user
+        // =====================================================
+        app.post('/api/runs', async (req, res) => {
+            try {
+                const { userId } = req.body;
+                if (!userId) {
+                    return res.status(400).send({ error: 'userId is required' });
+                }
+
+                // Prevent a user from having two runs going at once
+                const existingActive = await runsCollection.findOne({ userId, status: 'active' });
+                if (existingActive) {
+                    return res.send({ _id: existingActive._id, ...existingActive, resumed: true });
+                }
+
+                const newRun = {
+                    userId,
+                    status: 'active',
+                    route: { type: 'LineString', coordinates: [] },
+                    distanceMeters: 0,
+                    startedAt: new Date(),
+                };
+
+                const insertResult = await runsCollection.insertOne(newRun);
+                res.send({ _id: insertResult.insertedId, ...newRun });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ error: 'Failed to start run' });
+            }
+        });
+
+        // =====================================================
+        // RUN POINT — called repeatedly while a run is live to
+        // append the runner's current GPS fix, meter by meter
+        // =====================================================
+        app.post('/api/runs/:id/points', async (req, res) => {
+            try {
+                const { id } = req.params;
+                const { lat, lng } = req.body;
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ error: 'Invalid run id' });
+                }
+                if (typeof lat !== 'number' || typeof lng !== 'number' || Number.isNaN(lat) || Number.isNaN(lng)) {
+                    return res.status(400).send({ error: 'lat and lng must be numbers' });
+                }
+
+                const existingRun = await runsCollection.findOne({ _id: new ObjectId(id) });
+                if (!existingRun) {
+                    return res.status(404).send({ error: 'Run not found' });
+                }
+                if (existingRun.status !== 'active') {
+                    return res.status(400).send({ error: 'Run is not active' });
+                }
+
+                const coords = existingRun.route?.coordinates || [];
+                const newPoint = [lng, lat]; // GeoJSON order: [lng, lat]
+
+                let addedDistance = 0;
+                if (coords.length > 0) {
+                    const prevPoint = turf.point(coords[coords.length - 1]);
+                    const currPoint = turf.point(newPoint);
+                    addedDistance = turf.distance(prevPoint, currPoint, { units: 'meters' });
+
+                    // Skip near-zero movement (GPS jitter while standing still)
+                    if (addedDistance < MIN_MOVEMENT_METERS) {
+                        return res.send({
+                            success: true,
+                            skipped: true,
+                            totalPoints: coords.length,
+                            distanceMeters: existingRun.distanceMeters || 0,
+                        });
+                    }
+                }
+
+                const updatedDistance = (existingRun.distanceMeters || 0) + addedDistance;
+
+                await runsCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    {
+                        $push: { 'route.coordinates': newPoint },
+                        $set: { distanceMeters: updatedDistance, lastPointAt: new Date() },
+                    }
+                );
+
+                res.send({
+                    success: true,
+                    skipped: false,
+                    totalPoints: coords.length + 1,
+                    distanceMeters: updatedDistance,
+                    addedDistanceMeters: addedDistance,
+                });
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ error: 'Failed to record point' });
+            }
+        });
+
+        // =====================================================
+        // RUN GET — fetch a single run's current live state
+        // =====================================================
+        app.get('/api/runs/:id', async (req, res) => {
+            try {
+                const { id } = req.params;
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ error: 'Invalid run id' });
+                }
+                const existingRun = await runsCollection.findOne({ _id: new ObjectId(id) });
+                if (!existingRun) {
+                    return res.status(404).send({ error: 'Run not found' });
+                }
+                res.send(existingRun);
+            } catch (error) {
+                console.error(error);
+                res.status(500).send({ error: 'Failed to load run' });
+            }
+        });
 
         // =====================================================
         // RUN STOP — loop closure, territory claim, steal logic
@@ -114,9 +237,10 @@ async function run() {
                             turf.booleanContains(polygon, existingPolygon);
 
                         if (overlaps) {
-                            stolenFrom.push(existing.ownerId);
+                            stolenFrom.push({ ownerId: existing.ownerId, areaKm2: existing.areaKm2 });
                             // Territory is removed from the previous owner entirely —
-                            // this is the "delete on steal" behavior.
+                            // this is the "delete on steal" behavior. The old owner
+                            // (ager malik) loses it, the new run's owner gets it.
                             await territoriesCollection.deleteOne({ _id: existing._id });
                         }
                     }
