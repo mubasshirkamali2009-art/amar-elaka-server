@@ -1,5 +1,11 @@
-const dns = require("node:dns");
-dns.setServers(["1.1.1.1", "8.8.8.8"]);
+if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+    try {
+        const dns = require("node:dns");
+        dns.setServers(["1.1.1.1", "8.8.8.8"]);
+    } catch (e) {
+        console.warn("Could not set custom DNS servers:", e);
+    }
+}
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
@@ -9,10 +15,29 @@ const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const turf = require('@turf/turf');
 
 const app = express();
-const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 4001;
+const port = process.env.PORT || 4001;
+
+const rawClientUrl = process.env.CLIENT_URL || '';
+const clientUrl = rawClientUrl.replace(/\/+$/, '');
+const allowedOrigins = [
+    'http://localhost:3000',
+    'http://localhost:5173',
+    'https://amar-elaka-client.vercel.app',
+    clientUrl,
+].filter(Boolean);
 
 app.use(cors({
-    origin: "http://localhost:3000",
+    origin: function (origin, callback) {
+        if (!origin) return callback(null, true);
+        const normalized = origin.replace(/\/+$/, '');
+        if (
+            allowedOrigins.some(allowed => allowed.replace(/\/+$/, '') === normalized) ||
+            normalized.endsWith('.vercel.app')
+        ) {
+            return callback(null, true);
+        }
+        return callback(null, true);
+    },
     credentials: true,
 }));
 app.use(express.json());
@@ -59,7 +84,7 @@ async function reverseGeocode(lat, lng) {
 
 async function run() {
     try {
-        await client.connect();
+        // await client.connect();
 
         const database = client.db("territoryRunDB");
         const usersCollection = database.collection("users");
@@ -408,7 +433,7 @@ async function run() {
             }
         });
 
-        await client.db("admin").command({ ping: 1 });
+        // await client.db("admin").command({ ping: 1 });
         console.log("Pinged your deployment. You successfully connected to MongoDB!");
     } finally {
         // Ensures that the client will close when you finish/error
@@ -416,6 +441,10 @@ async function run() {
 }
 run().catch(console.dir);
 
-app.listen(port, '0.0.0.0', () => {
-    console.log(`Server listening on http://localhost:${port}`);
-});
+if (process.env.NODE_ENV !== 'production' || !process.env.VERCEL) {
+    app.listen(port, '0.0.0.0', () => {
+        console.log(`Server listening on http://localhost:${port}`);
+    });
+}
+
+module.exports = app;
